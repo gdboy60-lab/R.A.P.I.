@@ -1,24 +1,33 @@
-// 상단 시계 바: 1초마다 서버에 시계를 진행시키고 화면을 갱신한다.
+// 상단 시계 바: 장중에 1초마다 서버의 시계를 진행시키고 화면을 갱신한다.
 // 화면이 닫히면 호출이 멈추므로 시계도 멈춘다 (서버가 한 번에 최대 5초만 인정).
 (function () {
   const $ = (id) => document.getElementById(id);
   const SPEEDS = [1, 5, 10, 30];
+  const LABEL = { pre_open: "장 시작 전", running: "장중", paused: "일시정지됨", closed: "장 마감" };
   let state = null;
 
   function render(s) {
-    if (!s || s.error) { if (s && s.error) alert(s.error); return; }
+    if (!s) return;
+    if (s.error) { alert(s.error); return; }
+    const before = state;
     state = s;
-    $("clock-day").textContent = `${s.day}일차 / ${s.total_days}일 · ` +
-      ({ pre_open: "장 시작 전", running: "장중", paused: "일시정지됨", closed: "장 마감" })[s.status];
+    window.rapiClock = s;
+    $("clock-day").textContent = `${s.day}일차 / ${s.total_days}일 · ${LABEL[s.status]}`;
     $("clock-time").textContent = s.time;
     $("btn-speed").textContent = `${s.speed}×`;
     $("btn-toggle").textContent = s.status === "paused" ? "▶" : "❚❚";
+    const live = ["running", "paused"].includes(s.status);
     $("btn-open").hidden = s.status !== "pre_open";
-    $("btn-toggle").hidden = !["running", "paused"].includes(s.status);
-    $("btn-speed").hidden = !["running", "paused"].includes(s.status);
-    $("btn-skip").hidden = !["running", "paused"].includes(s.status);
-    // 3주차: 장 마감이면 결과 화면으로 자동 전환. 지금은 버튼만 보여준다.
+    $("btn-toggle").hidden = !live;
+    $("btn-speed").hidden = !live;
+    $("btn-skip").hidden = !live;
+    // 3주차: 장 마감이면 결과 화면으로 자동 전환. 지금은 다음 거래일 버튼만 보여준다.
     $("btn-next").hidden = !(s.status === "closed" && !s.is_last_day);
+    // 지정가 체결, 장 열림·마감, 날짜 변경처럼 화면 내용이 바뀌면 새로고침한다
+    const changed = before && (before.status !== s.status || before.day !== s.day);
+    if ((s.events && s.events.some((e) => e.startsWith("order_filled"))) || changed) {
+      location.reload();
+    }
   }
 
   async function call(method, path) {
@@ -27,12 +36,13 @@
   }
 
   $("btn-open").onclick = () => call("POST", "/api/clock/open");
-  $("btn-toggle").onclick = () => call("POST", state.status === "paused" ? "/api/clock/resume" : "/api/clock/pause");
+  $("btn-toggle").onclick = () =>
+    call("POST", state.status === "paused" ? "/api/clock/resume" : "/api/clock/pause");
   $("btn-speed").onclick = () => {
     const next = SPEEDS[(SPEEDS.indexOf(state.speed) + 1) % SPEEDS.length];
     call("POST", `/api/clock/speed?speed=${next}`);
   };
-  $("btn-skip").onclick = () => call("POST", "/api/clock/skip");
+  $("btn-skip").onclick = () => { $("btn-skip").disabled = true; call("POST", "/api/clock/skip"); };
   $("btn-next").onclick = () => call("POST", "/api/clock/next");
 
   call("GET", "/api/clock");

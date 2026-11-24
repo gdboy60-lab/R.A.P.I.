@@ -1,0 +1,13 @@
+<header class="clockbar" id="clockbar">
+  <div>
+    <div class="small dim" id="clock-day">{{ clock.day }}일차 / {{ clock.total_days }}일</div>
+    <div class="clock-time" id="clock-time">{{ clock.time }}</div>
+  </div>
+  <div class="clock-buttons">
+    <button id="btn-open"  class="cbtn light">장 열기</button>
+    <button id="btn-toggle" class="cbtn" aria-label="일시정지 또는 재생">❚❚</button>
+    <button id="btn-speed" class="cbtn" aria-label="재생 속도">{{ clock.speed }}×</button>
+    <button id="btn-skip"  class="cbtn light">장 마감까지 ≫</button>
+    <button id="btn-next"  class="cbtn light">다음 거래일</button>
+  </div>
+</header>

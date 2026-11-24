@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>거래 기록</h1>
+
+<h2>미체결 주문</h2>
+{% for o in open_orders %}
+<section class="card row-between">
+  <div>
+    <strong>{{ o.name }}</strong>
+    <span class="small {{ 'up' if o.side == 'buy' else 'down' }}">지정가 {{ '매수' if o.side == 'buy' else '매도' }}</span>
+    <div class="small muted">{{ o.limit_price|won }}원 × {{ o.quantity }}주 · {{ o.when }} · 장 마감 시 자동 취소</div>
+  </div>
+  <form method="post" action="/order/{{ o.order_id }}/cancel"><button class="cbtn outline" type="submit">취소</button></form>
+</section>
+{% else %}
+<p class="small muted">미체결 주문이 없어요.</p>
+{% endfor %}
+
+<h2>진행 중인 거래</h2>
+{% for t in open_trades %}
+<a class="card link" href="/stock/{{ t.stock_code }}">
+  <div class="row-between">
+    <div><strong>{{ t.name }} · {{ t.qty }}주</strong>
+      <div class="small muted">{{ t.opened }} 시작 · 평균 {{ t.avg|won }}원</div></div>
+    <div class="right"><strong class="{{ 'up' if (t.eval_pnl or 0) >= 0 else 'down' }}">{{ '%+d'|format(t.eval_pnl or 0) }}원</strong>
+      <div class="small muted">평가 손익</div></div>
+  </div>
+  <div class="tile small">
+    목표가 {{ t.target_price|won }} · 손절가 {{ t.stop_price|won }} · 목표 수량 {{ t.target_qty|won }}
+    {% if t.stop_reached_at %}<div class="warn">손절가 도달 {{ t.stop_reached_at[11:16] }}</div>{% endif %}
+    {% if not t.reason and not t.target_price and not t.stop_price %}<div class="warn">매매 계획 없음</div>{% endif %}
+  </div>
+</a>
+{% else %}
+<p class="small muted">진행 중인 거래가 없어요.</p>
+{% endfor %}
+
+<h2>끝난 거래</h2>
+{% for t in closed_trades %}
+<section class="card row-between">
+  <div><strong>{{ t.name }}</strong><div class="small muted">{{ t.opened }} ~ {{ t.closed }}</div></div>
+  <div class="right"><strong class="{{ 'up' if t.realized_pnl >= 0 else 'down' }}">{{ '%+d'|format(t.realized_pnl) }}원</strong>
+    <div class="small muted">{{ '%+.1f'|format(t.realized_return * 100) }}% · 비용 차감 후</div></div>
+</section>
+{% else %}
+<p class="small muted">끝난 거래가 없어요.</p>
+{% endfor %}
+{% endblock %}

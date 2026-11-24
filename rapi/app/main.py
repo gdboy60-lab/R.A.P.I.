@@ -1,21 +1,26 @@
 """R.A.P.I 웹 서버 (FastAPI).
 
-실행:  uvicorn app.main:app --reload
-지금 있는 화면: 로그인 → 프로젝트 시작(기간 선택) → 홈(시계 바만 동작)
+실행:  python -m uvicorn app.main:app --reload
+지금 있는 화면: 로그인 → 프로젝트 시작 → 홈 · 시장 · 종목 상세(주문) · 거래 기록
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote as urlquote
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from . import settings
 from .db import DEFAULT_DB_PATH, connect, init_db
-from .engine.clock import ClockError
+from .engine.clock import CLOSED, ClockError
 from .engine.clock_store import clock_view, load_clock, save_clock
+from .engine.prices import ReplayFeed
+from .engine.trading import (OrderError, TickWatcher, available_cash, cancel_order, market_close,
+                             place_order, sellable_qty)
 from .projects import ProjectError, create_guest, create_project
 from .rules.catalog import scores_for_project
 
@@ -41,11 +46,26 @@ def ensure_db(db_path=DEFAULT_DB_PATH) -> bool:
 
 
 ensure_db()
-app = FastAPI(title="R.A.P.I")
+# debug=True: 오류가 나면 브라우저에 원인(Traceback)을 보여준다. 개발 중에만 켜고, 공개 시연 때는 False 로 바꾼다.
+app = FastAPI(title="R.A.P.I", debug=True)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
+templates.env.filters["won"] = lambda v: "-" if v is None else f"{int(v):,}"
+# css·js 를 고치면 주소 뒤 숫자가 바뀌어서, 브라우저가 예전 파일을 쓰지 않고 새로 받는다
+templates.env.globals["static_v"] = lambda name: int((BASE / "static" / name).stat().st_mtime)
 
 COOKIE = "rapi_project"   # 체험 계정: 이 기기(브라우저)에서만 이어보기 (FR-32). 시연용 단순 방식.
+
+
+class NeedLogin(Exception):
+    pass
+
+
+@app.exception_handler(NeedLogin)
+def _need_login(request: Request, exc: NeedLogin):
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"error": "로그인이 필요해요"}, status_code=401)
+    return RedirectResponse("/logout", status_code=303)
 
 
 def get_conn():
@@ -57,26 +77,67 @@ def get_conn():
         conn.close()
 
 
-def current_project(request: Request) -> int:
+def current_project(request: Request, conn=Depends(get_conn)) -> int:
+    """쿠키의 프로젝트가 실제로 있는지까지 확인한다 (DB를 새로 만든 뒤 남은 쿠키 대비)."""
     pid = request.cookies.get(COOKIE)
-    if not pid:
-        raise HTTPException(status_code=401, detail="로그인이 필요해요")
+    if not pid or not pid.isdigit() or not conn.execute(
+            "SELECT 1 FROM projects WHERE project_id = ?", (int(pid),)).fetchone():
+        raise NeedLogin()
     return int(pid)
 
 
-def engine_tick(conn, project_id: int):
-    """시뮬레이션 1초마다 불리는 콜백. 2주차에 체결 엔진(지정가 체결, 손절·목표가 도달)을 연결한다."""
-    def on_second(t: datetime) -> None:
-        pass
-    return on_second
+def _int(v) -> int | None:
+    v = (v or "").replace(",", "").strip()
+    return int(v) if v.isdigit() else None
 
 
-# ---------- 화면 ----------
+def _stocks(conn, project_id: int):
+    return conn.execute(
+        "SELECT s.stock_code, s.display_name FROM replay_stocks s JOIN projects p USING (period_id) "
+        "WHERE p.project_id = ? ORDER BY s.display_name",
+        (project_id,),
+    ).fetchall()
+
+
+def _source_note(conn, project_id: int) -> str:
+    label = conn.execute(
+        "SELECT r.label FROM replay_periods r JOIN projects p USING (period_id) WHERE p.project_id = ?",
+        (project_id,),
+    ).fetchone()[0]
+    return settings.DEV_DATA_NOTE if label.startswith("개발용") else settings.DATA_SOURCE_NOTE
+
+
+def _quote_view(feed: ReplayFeed, code: str, t: datetime, pre_open: bool) -> dict:
+    q = feed.quote(code, t)
+    if q is None:
+        return {"price": None, "change": None}
+    price = q.prev_close if pre_open and q.prev_close else q.price
+    change = (price / q.prev_close - 1) * 100 if q.prev_close else None
+    return {"price": price, "change": change}
+
+
+def _page(request, template, conn, project_id, **ctx):
+    clock = load_clock(conn, project_id)
+    ctx.update(clock=clock_view(clock), source_note=_source_note(conn, project_id),
+               error=request.query_params.get("error"), ok=request.query_params.get("ok"))
+    return templates.TemplateResponse(request, template, ctx)
+
+
+# ------------------------------------------------------------------ 시작
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     if request.cookies.get(COOKIE):
         return RedirectResponse("/home", status_code=303)
     return templates.TemplateResponse(request, "login.html")
+
+
+@app.get("/logout")
+def logout():
+    """체험 기록 쿠키를 지우고 로그인 화면으로. 시연 중 처음으로 돌아갈 때 쓴다."""
+    resp = RedirectResponse("/", status_code=303)
+    resp.delete_cookie(COOKIE)
+    resp.delete_cookie("rapi_user")
+    return resp
 
 
 @app.post("/guest")
@@ -100,52 +161,235 @@ def choose_period(request: Request, conn=Depends(get_conn)):
 @app.post("/start/{period_id}")
 def start_project(period_id: int, request: Request, conn=Depends(get_conn)):
     user_id = request.cookies.get("rapi_user")
-    if not user_id:
-        return RedirectResponse("/", status_code=303)
+    if not user_id or not conn.execute("SELECT 1 FROM users WHERE user_id = ?", (int(user_id),)).fetchone():
+        return RedirectResponse("/logout", status_code=303)
     try:
         project_id = create_project(conn, int(user_id), period_id)
     except ProjectError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        # 이미 진행 중인 프로젝트가 있으면 오류 대신 그 프로젝트로 이어간다
+        row = conn.execute(
+            "SELECT project_id FROM projects WHERE user_id = ? AND status IN ('pending', 'active')",
+            (int(user_id),),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=409, detail=str(e))
+        project_id = row[0]
     resp = RedirectResponse("/home", status_code=303)
     resp.set_cookie(COOKIE, str(project_id), max_age=60 * 60 * 24 * 60)
     return resp
 
 
+# ------------------------------------------------------------------ 탭 화면
 @app.get("/home", response_class=HTMLResponse)
 def home(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
     clock = load_clock(conn, project_id)
+    feed, pre = ReplayFeed(conn), clock.status == "pre_open"
+    acc = conn.execute("SELECT account_id, cash FROM accounts WHERE project_id = ?", (project_id,)).fetchone()
+    names = dict((r[0], r[1]) for r in _stocks(conn, project_id))
+    holdings = []
+    for h in conn.execute(
+            "SELECT h.stock_code, h.quantity, p.stop_price, p.target_price, t.stop_reached_at "
+            "FROM holdings h LEFT JOIN trades t ON t.trade_id = h.trade_id "
+            "LEFT JOIN plans p ON p.plan_id = t.plan_id WHERE h.account_id = ? AND h.quantity > 0",
+            (acc[0],)).fetchall():
+        qv = _quote_view(feed, h["stock_code"], clock.sim_now, pre)
+        holdings.append({**dict(h), "name": names.get(h["stock_code"], h["stock_code"]), **qv})
+    total = acc[1] + sum((h["price"] or 0) * h["quantity"] for h in holdings)
     scores = scores_for_project(conn, project_id, published_only=True)   # 장중에는 공개된 감점만
-    cash = conn.execute("SELECT cash FROM accounts WHERE project_id = ?", (project_id,)).fetchone()[0]
-    return templates.TemplateResponse(request, "home.html", {
-        "clock": clock_view(clock), "scores": scores, "cash": cash,
-    })
+    return _page(request, "home.html", conn, project_id, tab="home",
+                 scores=scores, cash=acc[1], total=total, holdings=holdings)
 
 
-# ---------- 시계 API (상단 시계 바가 1초마다 호출) ----------
+@app.get("/market", response_class=HTMLResponse)
+def market(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    feed, pre = ReplayFeed(conn), clock.status == "pre_open"
+    watched = {r[0] for r in conn.execute(
+        "SELECT stock_code FROM watchlist WHERE project_id = ? AND removed_at IS NULL", (project_id,))}
+    rows = [{"code": s[0], "name": s[1], "watched": s[0] in watched,
+             **_quote_view(feed, s[0], clock.sim_now, pre)} for s in _stocks(conn, project_id)]
+    only_watch = request.query_params.get("filter") == "watch"
+    if only_watch:
+        rows = [r for r in rows if r["watched"]]
+    return _page(request, "market.html", conn, project_id, tab="market", rows=rows,
+                 n_watch=len(watched), n_all=len(_stocks(conn, project_id)), only_watch=only_watch)
+
+
+@app.post("/watch/{code}")
+def toggle_watch(code: str, request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    back = request.headers.get("referer") or "/market"
+    existing = conn.execute(
+        "SELECT watch_id FROM watchlist WHERE project_id = ? AND stock_code = ? AND removed_at IS NULL",
+        (project_id, code),
+    ).fetchone()
+    # 장 시작 전에 넣은 종목은 '당일 장 시작 전 등록'으로 인정된다 (PA-04).
+    # 장 시작 전 화면의 시각은 개장 시각과 같으므로 1초 앞으로 기록해 개장 전임을 분명히 한다.
+    t = clock.sim_now - timedelta(seconds=1) if clock.status == "pre_open" else clock.sim_now
+    if existing:
+        conn.execute("UPDATE watchlist SET removed_at = ? WHERE watch_id = ?", (t.isoformat(), existing[0]))
+    else:
+        try:
+            conn.execute("INSERT INTO watchlist (project_id, stock_code, added_at) VALUES (?, ?, ?)",
+                         (project_id, code, t.isoformat()))
+        except Exception:
+            return RedirectResponse(f"/market?error={urlquote('관심 종목은 20개까지예요')}", status_code=303)
+    return RedirectResponse(back, status_code=303)
+
+
+@app.get("/stock/{code}", response_class=HTMLResponse)
+def stock(code: str, request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    names = dict((r[0], r[1]) for r in _stocks(conn, project_id))
+    if code not in names:
+        raise HTTPException(status_code=404, detail="이 기간의 종목이 아니에요")
+    feed, pre = ReplayFeed(conn), clock.status == "pre_open"
+    qv = _quote_view(feed, code, clock.sim_now, pre)
+    q = feed.quote(code, clock.sim_now)
+    # 오늘 장 시작부터 지금까지 2분 간격 가격 (차트)
+    chart = []
+    if q and not pre:
+        start = clock.today.open_at
+        t = start
+        while t <= clock.sim_now:
+            chart.append(feed.quote(code, t).price)
+            t += timedelta(minutes=2)
+        chart.append(q.price)
+    acc = conn.execute("SELECT account_id, cash FROM accounts WHERE project_id = ?", (project_id,)).fetchone()
+    watched = conn.execute(
+        "SELECT added_at FROM watchlist WHERE project_id = ? AND stock_code = ? AND removed_at IS NULL",
+        (project_id, code)).fetchone()
+    open_trade = conn.execute(
+        "SELECT t.trade_id, p.reason, p.target_price, p.stop_price, p.target_qty FROM trades t "
+        "LEFT JOIN plans p ON p.plan_id = t.plan_id "
+        "WHERE t.account_id = ? AND t.stock_code = ? AND t.status = 'open'", (acc[0], code)).fetchone()
+    held = conn.execute("SELECT quantity FROM holdings WHERE account_id = ? AND stock_code = ?",
+                        (acc[0], code)).fetchone()
+    return _page(request, "stock.html", conn, project_id, tab="market", code=code, name=names[code],
+                 prev_close=q.prev_close if q else None, chart=chart, watched=watched,
+                 open_trade=open_trade, held=held[0] if held else 0,
+                 can_buy=available_cash(conn, acc[0], acc[1]), can_sell=sellable_qty(conn, acc[0], code),
+                 side=request.query_params.get("side", "buy"), **qv)
+
+
+@app.post("/order")
+def order(request: Request, code: str = Form(...), side: str = Form(...), order_type: str = Form(...),
+          qty: str = Form(""), limit_price: str = Form(""), reason: str = Form(""),
+          target_price: str = Form(""), stop_price: str = Form(""), target_qty: str = Form(""),
+          conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    feed, was = ReplayFeed(conn), clock.status
+    # 주문 전에 시계를 지금까지 진행시켜, 주문 시각과 가격이 화면과 맞도록 한다
+    clock.advance(datetime.now(), TickWatcher(conn, feed, project_id))
+    _after_clock(conn, project_id, clock, was)
+    plan = {"reason": reason.strip(), "target_price": _int(target_price),
+            "stop_price": _int(stop_price), "target_qty": _int(target_qty)}
+    try:
+        r = place_order(conn, feed, project_id, clock.sim_now, clock.status, code, side, order_type,
+                        _int(qty) or 0, _int(limit_price), plan if side == "buy" else None)
+    except OrderError as e:
+        save_clock(conn, project_id, clock)
+        return RedirectResponse(f"/stock/{code}?side={side}&error={urlquote(str(e))}", status_code=303)
+    save_clock(conn, project_id, clock)
+    msg = "체결됐어요" if r["filled"] else "주문이 접수됐어요. 지정가에 닿으면 체결돼요"
+    return RedirectResponse(f"/stock/{code}?side={side}&ok={urlquote(msg)}", status_code=303)
+
+
+@app.post("/order/{order_id}/cancel")
+def cancel(order_id: int, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    try:
+        cancel_order(conn, project_id, order_id, clock.sim_now)
+    except OrderError as e:
+        return RedirectResponse(f"/trades?error={urlquote(str(e))}", status_code=303)
+    return RedirectResponse(f"/trades?ok={urlquote('주문을 취소했어요')}", status_code=303)
+
+
+@app.get("/trades", response_class=HTMLResponse)
+def trades(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    feed, pre = ReplayFeed(conn), clock.status == "pre_open"
+    acc = conn.execute("SELECT account_id FROM accounts WHERE project_id = ?", (project_id,)).fetchone()[0]
+    names = dict((r[0], r[1]) for r in _stocks(conn, project_id))
+    day_of = {r[0]: i + 1 for i, r in enumerate(conn.execute(
+        "SELECT c.date FROM market_calendar c JOIN projects p ON c.date BETWEEN p.start_date AND p.end_date "
+        "WHERE p.project_id = ? AND c.is_open = 1 ORDER BY c.date", (project_id,)))}
+
+    def when(ts):
+        if not ts:
+            return ""
+        return f"{day_of.get(ts[:10], '?')}일차 {ts[11:16]}"
+
+    open_orders = [{**dict(o), "name": names.get(o["stock_code"]), "when": when(o["submitted_at"])}
+                   for o in conn.execute("SELECT * FROM orders WHERE account_id = ? AND status = 'open' "
+                                         "ORDER BY order_id DESC", (acc,))]
+    rows = conn.execute(
+        "SELECT t.*, p.reason, p.target_price, p.stop_price, p.target_qty, h.quantity AS qty, "
+        " (SELECT COUNT(*) FROM plan_revisions r WHERE r.plan_id = p.plan_id) AS revisions "
+        "FROM trades t LEFT JOIN plans p ON p.plan_id = t.plan_id "
+        "LEFT JOIN holdings h ON h.account_id = t.account_id AND h.stock_code = t.stock_code "
+        "WHERE t.account_id = ? ORDER BY t.trade_id DESC", (acc,)).fetchall()
+    open_trades, closed_trades = [], []
+    for t in rows:
+        d = {**dict(t), "name": names.get(t["stock_code"]), "opened": when(t["opened_at"]),
+             "closed": when(t["closed_at"])}
+        if t["status"] == "open":
+            cost = conn.execute(
+                "SELECT SUM(e.price * e.quantity + e.fee), SUM(e.quantity) FROM executions e "
+                "JOIN orders o USING (order_id) WHERE o.trade_id = ? AND o.side = 'buy'", (t["trade_id"],)).fetchone()
+            qv = _quote_view(feed, t["stock_code"], clock.sim_now, pre)
+            d["avg"] = cost[0] / cost[1] if cost[1] else None
+            d["eval_pnl"] = (qv["price"] * (t["qty"] or 0) - cost[0]) if qv["price"] and cost[0] else None
+            open_trades.append(d)
+        else:
+            closed_trades.append(d)
+    return _page(request, "trades.html", conn, project_id, tab="trades",
+                 open_orders=open_orders, open_trades=open_trades, closed_trades=closed_trades)
+
+
+# ------------------------------------------------------------------ API
+@app.get("/api/quotes")
+def quotes(conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    feed, pre = ReplayFeed(conn), clock.status == "pre_open"
+    return {s[0]: _quote_view(feed, s[0], clock.sim_now, pre) for s in _stocks(conn, project_id)}
+
+
+def _after_clock(conn, project_id: int, clock, was: str) -> None:
+    """장 마감에 처음 닿은 순간 장 마감 처리를 한 번만 실행한다 (명세서 10-2)."""
+    if was != CLOSED and clock.status == CLOSED:
+        market_close(conn, project_id, clock.sim_now)
+        # 3주차: 여기서 RM-03·BC-01 판정 → AI 일일 피드백 → 결과 공개
+
+
 @app.get("/api/clock")
 def get_clock(conn=Depends(get_conn), project_id: int = Depends(current_project)):
     clock = load_clock(conn, project_id)
-    clock.advance(datetime.now(), engine_tick(conn, project_id))
+    was = clock.status
+    watcher = TickWatcher(conn, ReplayFeed(conn), project_id)
+    clock.advance(datetime.now(), watcher)
     save_clock(conn, project_id, clock)
-    return clock_view(clock)
+    _after_clock(conn, project_id, clock, was)
+    return {**clock_view(clock), "events": watcher.events}
 
 
 @app.post("/api/clock/{action}")
 def control_clock(action: str, speed: int | None = None,
                   conn=Depends(get_conn), project_id: int = Depends(current_project)):
     clock = load_clock(conn, project_id)
-    now, tick = datetime.now(), engine_tick(conn, project_id)
+    was, now = clock.status, datetime.now()
+    watcher = TickWatcher(conn, ReplayFeed(conn), project_id)
     try:
         if action == "open":
             clock.open_market(now)
         elif action == "pause":
-            clock.pause(now, tick)
+            clock.pause(now, watcher)
         elif action == "resume":
             clock.resume(now)
         elif action == "speed" and speed:
-            clock.set_speed(speed, now, tick)
+            clock.set_speed(speed, now, watcher)
         elif action == "skip":
-            clock.skip_to_close(tick)
+            clock.skip_to_close(watcher)
         elif action == "next":
             clock.next_day()
         else:
@@ -153,5 +397,5 @@ def control_clock(action: str, speed: int | None = None,
     except ClockError as e:
         return JSONResponse({"error": str(e)}, status_code=409)
     save_clock(conn, project_id, clock)
-    # 장 마감에 닿았다면 3주차에 '장 마감 처리 순서'(명세서 10-2)를 여기서 실행한다.
-    return clock_view(clock)
+    _after_clock(conn, project_id, clock, was)
+    return {**clock_view(clock), "events": watcher.events}

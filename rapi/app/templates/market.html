@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>시장</h1>
+<div class="seg">
+  <a class="{{ '' if only_watch else 'on' }}" href="/market">전체 {{ n_all }}</a>
+  <a class="{{ 'on' if only_watch else '' }}" href="/market?filter=watch">관심 {{ n_watch }} / 20</a>
+</div>
+<p class="small muted">
+  {% if clock.status == 'pre_open' %}지금 관심 종목에 넣으면 오늘 미리 계획한 종목으로 인정돼요.
+  {% else %}장중에 관심 종목으로 추가하면 오늘은 계획 외 종목으로 판정돼요.{% endif %}
+</p>
+<section class="card list">
+  {% for r in rows %}
+  <div class="item">
+    <form method="post" action="/watch/{{ r.code }}">
+      <button class="star {{ 'on' if r.watched }}" type="submit"
+              aria-label="{{ r.name }} 관심 종목 {{ '빼기' if r.watched else '넣기' }}">★</button>
+    </form>
+    <a class="grow link" href="/stock/{{ r.code }}"><strong>{{ r.name }}</strong></a>
+    <a class="right link" href="/stock/{{ r.code }}" data-code="{{ r.code }}">
+      <strong class="q-price">{{ r.price|won }}</strong>
+      <div class="small q-change {{ "up" if (r.change or 0) >= 0 else "down" }}">{% if r.change is not none %}{{ '%+.1f'|format(r.change) }}%{% endif %}</div>
+    </a>
+  </div>
+  {% else %}
+  <p class="muted">관심 종목이 없어요.</p>
+  {% endfor %}
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/quotes.js?v={{ static_v('quotes.js') }}"></script>{% endblock %}

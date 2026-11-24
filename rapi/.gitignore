@@ -1,0 +1,6 @@
+rapi.db
+periods.json
+*.csv
+__pycache__/
+.pytest_cache/
+.venv/

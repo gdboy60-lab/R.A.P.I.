@@ -11,8 +11,13 @@ DEFAULT_DB_PATH = ROOT / "rapi.db"
 
 
 def connect(db_path=DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """외래 키 검사를 켠 연결을 돌려준다. 행은 dict 처럼 열 이름으로 읽을 수 있다."""
-    conn = sqlite3.connect(str(db_path))
+    """외래 키 검사를 켠 연결을 돌려준다. 행은 dict 처럼 열 이름으로 읽을 수 있다.
+
+    check_same_thread=False: FastAPI 는 연결을 여는 단계와 화면을 만드는 단계를 서로 다른
+    작업 스레드에서 실행할 수 있다. 요청마다 연결을 새로 열고 닫으므로 한 연결을 동시에 쓰는 일은 없다.
+    timeout=10: 시계와 시세가 1초마다 요청을 보내므로, 쓰기가 겹치면 잠깐 기다렸다가 진행한다.
+    """
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

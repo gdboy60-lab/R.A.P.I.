@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row-between">
+  <a class="link" href="/market" aria-label="뒤로">‹ 시장</a>
+  <form method="post" action="/watch/{{ code }}">
+    <button class="star {{ 'on' if watched }}" type="submit" aria-label="관심 종목 {{ '빼기' if watched else '넣기' }}">★</button>
+  </form>
+</div>
+<div>
+  <h1>{{ name }}</h1>
+  <div class="small muted">{% if watched %}관심 종목{% else %}관심 종목 아님{% endif %}</div>
+</div>
+<div data-code="{{ code }}">
+  <span class="big q-price">{{ price|won }}원</span>
+  <strong class="q-change {{ "up" if (change or 0) >= 0 else "down" }}">{% if change is not none %}{{ '%+.1f'|format(change) }}%{% endif %}</strong>
+</div>
+
+{% if chart|length > 1 %}
+{% set lo = chart|min %}{% set hi = chart|max %}{% set span = (hi - lo) or 1 %}
+{% set n = chart|length %}
+<figure class="card chart">
+  <svg viewBox="0 0 330 120" role="img" aria-label="오늘 장 시작부터 지금까지 가격 흐름">
+    {% if prev_close and lo <= prev_close <= hi %}
+    <line x1="0" x2="330" y1="{{ 110 - (prev_close - lo) / span * 100 }}" y2="{{ 110 - (prev_close - lo) / span * 100 }}"
+          stroke="#C9CBD1" stroke-dasharray="4 4"/>
+    {% endif %}
+    <polyline fill="none" stroke="{{ '#C81E1E' if (change or 0) >= 0 else '#1D4ED8' }}" stroke-width="2.5"
+      points="{% for p in chart %}{{ loop.index0 / 195 * 330 }},{{ 110 - (p - lo) / span * 100 }} {% endfor %}"/>
+  </svg>
+  <figcaption class="small muted row-between"><span>장 시작</span><span>점선: 전일 종가 {{ prev_close|won }}</span><span>지금</span></figcaption>
+</figure>
+{% elif clock.status == 'pre_open' %}
+<p class="card small muted">장 시작 전이에요. 가격은 전일 종가예요.</p>
+{% endif %}
+
+{% if open_trade %}
+<section class="card small">
+  <strong>진행 중인 거래 · {{ held }}주</strong>
+  <div class="muted">목표가 {{ open_trade.target_price|won }} · 손절가 {{ open_trade.stop_price|won }} · 목표 수량 {{ open_trade.target_qty|won }}</div>
+  <div class="muted">추가 매수는 처음 계획을 따라요.</div>
+</section>
+{% endif %}
+
+<form method="post" action="/order" class="card form" id="order-form">
+  <input type="hidden" name="code" value="{{ code }}">
+  <div class="seg">
+    <label class="{{ 'on buy' if side == 'buy' }}"><input type="radio" name="side" value="buy" {{ 'checked' if side == 'buy' }}> 매수</label>
+    <label class="{{ 'on sell' if side == 'sell' }}"><input type="radio" name="side" value="sell" {{ 'checked' if side == 'sell' }}> 매도</label>
+  </div>
+  <div class="seg">
+    <label class="on"><input type="radio" name="order_type" value="limit" checked> 지정가</label>
+    <label><input type="radio" name="order_type" value="market"> 시장가</label>
+  </div>
+  <label>가격 (지정가)<input name="limit_price" inputmode="numeric" value="{{ price or '' }}"></label>
+  <label>수량<input name="qty" inputmode="numeric" placeholder="주"></label>
+  <p class="small muted" id="limits">
+    <span data-side="buy">주문 가능 금액 {{ can_buy|won }}원</span>
+    <span data-side="sell">매도 가능 {{ can_sell }}주</span>
+  </p>
+
+  <div class="plan" data-side="buy" role="group" aria-labelledby="plan-title">
+    <strong id="plan-title" class="plan-title">매매 계획</strong>
+    {% if open_trade %}
+    <p class="small muted">진행 중인 거래가 있어서 처음 계획을 따라요.</p>
+    {% else %}
+    <p class="small muted">주문 버튼을 누르는 순간의 계획으로 평가돼요. 비워두면 계획 누락으로 기록돼요.</p>
+    <label>매수 사유<textarea name="reason" rows="2"></textarea></label>
+    <div class="grid2">
+      <label>목표가<input name="target_price" inputmode="numeric"></label>
+      <label>손절가<input name="stop_price" inputmode="numeric"></label>
+    </div>
+    <label>목표 수량 (분할 매수 시 전체)<input name="target_qty" inputmode="numeric"></label>
+    {% endif %}
+  </div>
+
+  <button class="btn {{ 'btn-buy' if side == 'buy' else 'btn-sell' }}" type="submit" id="submit">
+    {{ '매수 주문' if side == 'buy' else '매도 주문' }}</button>
+  {% if clock.status not in ['running', 'paused'] %}
+  <p class="small warn">장이 열려 있을 때만 주문할 수 있어요.</p>
+  {% endif %}
+</form>
+{% endblock %}
+{% block scripts %}
+<script src="/static/quotes.js?v={{ static_v('quotes.js') }}"></script>
+<script>
+(function () {
+  const f = document.getElementById("order-form");
+  function sync() {
+    const side = f.side.value, type = f.order_type.value;
+    f.querySelectorAll("[data-side]").forEach(el => el.hidden = el.dataset.side !== side);
+    f.limit_price.disabled = type === "market";
+    const btn = document.getElementById("submit");
+    btn.textContent = side === "buy" ? "매수 주문" : "매도 주문";
+    btn.className = "btn " + (side === "buy" ? "btn-buy" : "btn-sell");
+    f.querySelectorAll(".seg label").forEach(l => {
+      const i = l.querySelector("input");
+      l.classList.toggle("on", i.checked);
+      l.classList.toggle("buy", i.checked && i.value === "buy");
+      l.classList.toggle("sell", i.checked && i.value === "sell");
+    });
+  }
+  f.addEventListener("change", sync);
+  sync();
+})();
+</script>
+{% endblock %}
