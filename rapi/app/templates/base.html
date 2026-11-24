@@ -9,7 +9,7 @@
 </head>
 <body>
 <div class="app">
-  {% if clock is defined %}{% include "_clockbar.html" %}{% endif %}
+  {% if clock is defined and not hide_clock %}{% include "_clockbar.html" %}{% endif %}
   <main class="content">
     {% if error %}<p class="flash err">{{ error }}</p>{% endif %}
     {% if ok %}<p class="flash ok">{{ ok }}</p>{% endif %}
@@ -18,7 +18,7 @@
   </main>
   {% if tab is defined %}{% include "_tabs.html" %}{% endif %}
 </div>
-{% if clock is defined %}<script src="/static/clock.js?v={{ static_v('clock.js') }}"></script>{% endif %}
+{% if clock is defined and not hide_clock %}<script src="/static/clock.js?v={{ static_v('clock.js') }}"></script>{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

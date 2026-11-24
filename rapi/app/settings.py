@@ -14,3 +14,11 @@ WATCHLIST_MAX = 20
 
 DATA_SOURCE_NOTE = "시세 출처: 금융위원회, 공공데이터포털 (과거 일봉 기반 리플레이)"
 DEV_DATA_NOTE = "개발용 가상 시세"
+
+# AI 피드백 (명세서 11장)
+# API 키는 코드에 넣지 않는다. 환경 변수 ANTHROPIC_API_KEY 로 받는다 (Codespaces 비밀값).
+# 키가 없거나 호출이 실패하면 규칙 기반 기본 피드백으로 대신한다.
+AI_MODEL = "claude-haiku-5-5"
+AI_MAX_ATTEMPTS = 3          # 최초 1회 + 재시도 2회
+AI_TIMEOUT_SECONDS = 20
+AI_MAX_TOKENS = 1000

@@ -287,3 +287,5 @@ CREATE TABLE ai_feedbacks (
     attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts <= 3),   -- 최초 1회 + 재시도 2회
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- 같은 날 피드백은 하나만
+CREATE UNIQUE INDEX uq_feedback_day ON ai_feedbacks(project_id, kind, trading_day);

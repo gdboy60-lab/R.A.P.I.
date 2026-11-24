@@ -57,3 +57,37 @@ figure { margin:0; }
 .plan { min-width:0; min-inline-size:0; }
 .form label, .grid2 > * { min-width:0; }
 .form input:not([type=radio]), .form textarea { width:100%; }
+.closebar { display:flex; justify-content:space-between; align-items:center; background:var(--ink); color:#fff; margin:-20px -16px 0; padding:14px 16px; }
+.grid4 { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; }
+.grid4 .tile { align-items:center; padding:10px 4px; }
+.evalc { display:flex; flex-direction:column; gap:6px; }
+.linkbtn { display:flex; align-items:center; justify-content:center; text-decoration:none; }
+.fb { display:flex; flex-direction:column; gap:12px; }
+.fb p { margin:0; line-height:1.6; font-size:14px; }
+.fb .fb-summary, .fb-summary { font-size:16px; font-weight:700; margin:0; line-height:1.5; }
+.fb-part { display:flex; flex-direction:column; gap:4px; }
+.fb-label { font-weight:700; }
+.fb-action { background:var(--bg); border-radius:12px; padding:12px 14px; display:flex; flex-direction:column; gap:4px; }
+.fb-action p { font-weight:500; font-size:15px; }
+.card.dark { background:var(--ink); color:#fff; display:flex; flex-direction:column; gap:6px; }
+.card.dark .fb-label { color:#C9CBD1; }
+.fbitem summary { list-style:none; cursor:pointer; display:flex; flex-direction:column; gap:6px; }
+.fbitem summary::-webkit-details-marker { display:none; }
+.fbitem[open] summary { margin-bottom:12px; }
+.fbitem .fb { padding:0; background:none; }
+.fb-title { font-size:15px; line-height:1.5; }
+.fbitem .fb .fb-summary { display:none; }
+/* 최종 리포트 */
+.chart { width:100%; height:auto; display:block; margin:10px 0 4px; overflow:visible; }
+.chart .axis { stroke:var(--line); stroke-width:1; }
+.chart .divider { stroke:#C9CBD1; stroke-width:1; stroke-dasharray:3 3; }
+.chart .mark { fill:#B45309; }
+.chart .zero .mark { fill:#D9DAD6; }
+.chart .hit { fill:transparent; }
+.chart .bar:hover .mark { fill:#8A3F06; }
+.chart .zero:hover .mark { fill:#B9BBB6; }
+.chart .val { font-size:11px; font-weight:700; fill:var(--ink); }
+.chart .lbl { font-size:11px; fill:var(--muted); }
+.meter { height:8px; background:var(--bg); border-radius:4px; overflow:hidden; margin:8px 0 6px; }
+.meter span { display:block; height:100%; background:var(--ink); border-radius:4px; }
+.evalc p { margin:2px 0; line-height:1.6; font-size:14px; }

@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>시장</h1>
+{% if clock.status == 'pre_open' and today_action %}
+<section class="card dark">
+  <span class="small fb-label">오늘 해볼 행동</span>
+  <p class="fb-summary">{{ today_action }}</p>
+</section>
+{% endif %}
 <div class="seg">
   <a class="{{ '' if only_watch else 'on' }}" href="/market">전체 {{ n_all }}</a>
   <a class="{{ 'on' if only_watch else '' }}" href="/market?filter=watch">관심 {{ n_watch }} / 20</a>

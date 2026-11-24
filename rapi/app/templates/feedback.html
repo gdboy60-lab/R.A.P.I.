@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>피드백</h1>
+{% if today_action %}
+<section class="card dark">
+  <span class="small fb-label">오늘 해볼 행동</span>
+  <p class="fb-summary">{{ today_action }}</p>
+</section>
+{% endif %}
+{% for f in items %}
+<details class="card fbitem">
+  <summary>
+    <span class="row-between small">
+      <b>{{ f.trading_day }}일차</b>
+      {% if f.n_violations %}<span class="warn">감점 {{ f.n_violations }}건 · -{{ f.penalty }}</span>{% else %}<span class="muted">감점 없음</span>{% endif %}
+    </span>
+    <strong class="fb-title">{{ f.summary }}</strong>
+    <span class="small muted">다음 행동: {{ f.tomorrow_action }}</span>
+  </summary>
+  {% set fb = f %}{% include "_feedback.html" %}
+</details>
+{% else %}
+<p class="card muted">아직 피드백이 없어요. 첫 장 마감이 끝나면 여기에 쌓여요.</p>
+{% endfor %}
+{% endblock %}

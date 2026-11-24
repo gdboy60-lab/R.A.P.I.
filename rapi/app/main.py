@@ -1,10 +1,11 @@
 """R.A.P.I 웹 서버 (FastAPI).
 
 실행:  python -m uvicorn app.main:app --reload
-지금 있는 화면: 로그인 → 프로젝트 시작 → 홈 · 시장 · 종목 상세(주문) · 거래 기록
+지금 있는 화면: 로그인 → 프로젝트 시작 → 홈 · 시장 · 종목 상세(주문) · 거래 기록 · 장 마감 결과 · 피드백 · 최종 리포트
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote as urlquote
@@ -19,10 +20,14 @@ from .db import DEFAULT_DB_PATH, connect, init_db
 from .engine.clock import CLOSED, ClockError
 from .engine.clock_store import clock_view, load_clock, save_clock
 from .engine.prices import ReplayFeed
-from .engine.trading import (OrderError, TickWatcher, available_cash, cancel_order, market_close,
+from .ai import feedback as ai_feedback
+from .ai import report as ai_report
+from .day_close import close_day
+from .engine.trading import (OrderError, TickWatcher, available_cash, cancel_order,
                              place_order, sellable_qty)
 from .projects import ProjectError, create_guest, create_project
-from .rules.catalog import scores_for_project
+from .rules.catalog import RULES, area_scores, scores_for_project
+from .rules.describe import describe
 
 BASE = Path(__file__).resolve().parent
 
@@ -196,7 +201,7 @@ def home(request: Request, conn=Depends(get_conn), project_id: int = Depends(cur
         holdings.append({**dict(h), "name": names.get(h["stock_code"], h["stock_code"]), **qv})
     total = acc[1] + sum((h["price"] or 0) * h["quantity"] for h in holdings)
     scores = scores_for_project(conn, project_id, published_only=True)   # 장중에는 공개된 감점만
-    return _page(request, "home.html", conn, project_id, tab="home",
+    return _page(request, "home.html", conn, project_id, tab="home", finished=_finished(conn, project_id),
                  scores=scores, cash=acc[1], total=total, holdings=holdings)
 
 
@@ -212,7 +217,8 @@ def market(request: Request, conn=Depends(get_conn), project_id: int = Depends(c
     if only_watch:
         rows = [r for r in rows if r["watched"]]
     return _page(request, "market.html", conn, project_id, tab="market", rows=rows,
-                 n_watch=len(watched), n_all=len(_stocks(conn, project_id)), only_watch=only_watch)
+                 n_watch=len(watched), n_all=len(_stocks(conn, project_id)), only_watch=only_watch,
+                 today_action=_latest_action(conn, project_id, clock.day_number))
 
 
 @app.post("/watch/{code}")
@@ -347,6 +353,175 @@ def trades(request: Request, conn=Depends(get_conn), project_id: int = Depends(c
                  open_orders=open_orders, open_trades=open_trades, closed_trades=closed_trades)
 
 
+# ------------------------------------------------------------------ 장 마감 결과
+def _require_active(conn, project_id: int) -> None:
+    status = conn.execute("SELECT status FROM projects WHERE project_id = ?", (project_id,)).fetchone()[0]
+    if status != "active":
+        raise ClockError("끝난 프로젝트예요")
+
+
+@app.get("/close", response_class=HTMLResponse)
+def close_result(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    """장 마감 결과: 그날 공개된 판정과 점수 변화 (명세서 10-3, 12-2)."""
+    clock = load_clock(conn, project_id)
+    if clock.status != CLOSED:
+        return RedirectResponse("/home", status_code=303)
+    today = clock.today.date.isoformat()
+    names = dict((r[0], r[1]) for r in _stocks(conn, project_id))
+    rows = conn.execute(
+        "SELECT * FROM rule_evaluations WHERE project_id = ? AND published = 1 "
+        "AND substr(COALESCE(updated_at, evaluated_at), 1, 10) = ? AND result IN ('violation', 'hold') "
+        "ORDER BY (result = 'violation') DESC, penalty DESC, eval_id", (project_id, today)).fetchall()
+    items = [{"rule_id": r["rule_id"], "area": r["area"], "name": RULES[r["rule_id"]].name, "result": r["result"],
+              "penalty": r["penalty"], "eval_id": r["eval_id"], "text": describe(r, names)} for r in rows]
+    before = area_scores([(r[0], r[1]) for r in conn.execute(
+        "SELECT area, penalty FROM rule_evaluations WHERE project_id = ? AND result = 'violation' AND published = 1 "
+        "AND substr(COALESCE(updated_at, evaluated_at), 1, 10) < ?", (project_id, today))])
+    after = scores_for_project(conn, project_id, published_only=True)
+    acc = conn.execute("SELECT account_id FROM accounts WHERE project_id = ?", (project_id,)).fetchone()[0]
+    cancelled = conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE account_id = ? AND cancel_reason = 'market_close' "
+        "AND substr(closed_at, 1, 10) = ?", (acc, today)).fetchone()[0]
+    p = conn.execute("SELECT status, end_reason, baseline_daily_avg FROM projects WHERE project_id = ?",
+                     (project_id,)).fetchone()
+    return templates.TemplateResponse(request, "close.html", {
+        "clock": clock_view(clock), "hide_clock": True, "items": items, "before": before, "after": after,
+        "n_violations": sum(1 for i in items if i["result"] == "violation"),
+        "total_penalty": sum(i["penalty"] for i in items), "cancelled": cancelled,
+        "status": p["status"], "end_reason": p["end_reason"], "baseline_avg": p["baseline_daily_avg"],
+        "areas": [("RM", "위험 관리"), ("PA", "계획 준수"), ("BC", "행동 일관성"), ("MC", "시장 상황")],
+        "feedback": _saved_feedback(conn, project_id, clock.day_number),
+    })
+
+
+@app.post("/next")
+def next_day(conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    """다음 거래일은 장 마감 결과 화면에서만 진행한다."""
+    clock = load_clock(conn, project_id)
+    try:
+        _require_active(conn, project_id)
+        clock.next_day()
+    except ClockError:
+        return RedirectResponse("/close", status_code=303)
+    save_clock(conn, project_id, clock)
+    return RedirectResponse("/market", status_code=303)
+
+
+# ------------------------------------------------------------------ AI 피드백
+def _saved_feedback(conn, project_id: int, day_number: int):
+    row = conn.execute(
+        "SELECT * FROM ai_feedbacks WHERE project_id = ? AND kind = 'daily' AND trading_day = ? "
+        "AND status IN ('ok', 'failed')", (project_id, day_number)).fetchone()
+    return ai_feedback._view(row) if row else None
+
+
+def _latest_action(conn, project_id: int, day_number: int):
+    """전날 피드백의 '내일 해볼 행동' (장 시작 전 화면·피드백 탭 상단)."""
+    fb = _saved_feedback(conn, project_id, day_number - 1)
+    return fb["tomorrow_action"] if fb else None
+
+
+@app.post("/api/feedback/today", response_class=HTMLResponse)
+def feedback_today(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    """장 마감 결과 화면이 열린 뒤 부른다. 점수는 이미 공개됐고, 피드백만 이어서 만든다 (명세서 11-6)."""
+    clock = load_clock(conn, project_id)
+    if clock.status != CLOSED:
+        raise HTTPException(status_code=409, detail="장 마감 뒤에만 만들 수 있어요")
+    fb = ai_feedback.generate_daily(conn, project_id, clock.day_number, clock.today.date.isoformat())
+    conn.commit()
+    return templates.TemplateResponse(request, "_feedback.html", {"fb": fb})
+
+
+@app.get("/feedback", response_class=HTMLResponse)
+def feedback_list(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    clock = load_clock(conn, project_id)
+    rows = conn.execute(
+        "SELECT * FROM ai_feedbacks WHERE project_id = ? AND kind = 'daily' AND status IN ('ok', 'failed') "
+        "ORDER BY trading_day DESC", (project_id,)).fetchall()
+    items = []
+    for r in rows:
+        fb = ai_feedback._view(r)
+        day = conn.execute(
+            "SELECT c.date FROM market_calendar c JOIN projects p ON c.date BETWEEN p.start_date AND p.end_date "
+            "WHERE p.project_id = ? AND c.is_open = 1 ORDER BY c.date LIMIT 1 OFFSET ?",
+            (project_id, r["trading_day"] - 1)).fetchone()[0]
+        n = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(penalty), 0) FROM rule_evaluations WHERE project_id = ? "
+            "AND result = 'violation' AND published = 1 AND substr(COALESCE(updated_at, evaluated_at), 1, 10) = ?",
+            (project_id, day)).fetchone()
+        items.append({**fb, "n_violations": n[0], "penalty": n[1]})
+    today_action = None
+    if clock.status == CLOSED:
+        today_action = None
+    elif items and items[0]["trading_day"] == clock.day_number - 1:
+        today_action = items[0]["tomorrow_action"]
+    return _page(request, "feedback.html", conn, project_id, tab="feedback", items=items, today_action=today_action)
+
+
+# ------------------------------------------------------------------ 최종 리포트
+def _finished(conn, project_id: int) -> bool:
+    s = conn.execute("SELECT status FROM projects WHERE project_id = ?", (project_id,)).fetchone()[0]
+    return s in ("finished", "terminated")
+
+
+def _chart(daily: list[dict], baseline_days: int = ai_report.BASELINE_DAYS) -> dict:
+    """일차별 감점 막대 그래프의 좌표 (SVG는 템플릿에서 그린다)."""
+    W, H, top, bottom = 358, 150, 22, 24
+    n = max(len(daily), 1)
+    slot = W / n
+    bw = min(22, slot * 0.6)
+    peak = max([d["penalty"] for d in daily] + [1])
+    plot_h = H - top - bottom
+    bars = []
+    for i, d in enumerate(daily):
+        h = max(2, round(d["penalty"] / peak * plot_h)) if d["penalty"] else 2
+        x = i * slot + (slot - bw) / 2
+        bars.append({**d, "x": round(x, 1), "w": round(bw, 1), "y": H - bottom - h, "h": h,
+                     "cx": round(x + bw / 2, 1), "hx": round(i * slot, 1), "hw": round(slot, 1)})
+    divider = round(baseline_days * slot, 1) if len(daily) > baseline_days else None
+    return {"W": W, "H": H, "base_y": H - bottom, "bars": bars, "divider": divider, "slot": round(slot, 1)}
+
+
+def _saved_report(conn, project_id: int):
+    row = conn.execute("SELECT output_text, model, status FROM ai_feedbacks WHERE project_id = ? AND kind = 'final' "
+                       "AND status IN ('ok', 'failed')", (project_id,)).fetchone()
+    if not row:
+        return None
+    return {**json.loads(row["output_text"]), "model": row["model"], "status": row["status"]}
+
+
+def _ai_view(ai: dict) -> dict:
+    """AI 문장을 화면에 끼우기 쉬운 모양으로 (규칙별 설명은 rule_id로 찾는다)."""
+    return {"repeated": {r["rule_id"]: {"text": r["text"], "eval_ids": r["eval_ids"]} for r in ai["repeated"]},
+            "change": ai.get("change"), "focus": ai["focus"],
+            "is_ai": ai["model"] != "rule-based", "status": ai["status"]}
+
+
+@app.get("/report", response_class=HTMLResponse)
+def report_page(request: Request, conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    """최종 리포트 (명세서 11-7, 12-2). 기간이 끝났거나 조기 종료된 프로젝트만."""
+    if not _finished(conn, project_id):
+        return RedirectResponse("/home", status_code=303)
+    data = ai_report.build_report_data(conn, project_id)
+    saved = _saved_report(conn, project_id)
+    return templates.TemplateResponse(request, "report.html", {
+        "hide_clock": True, "d": data, "chart": _chart(data["daily"]),
+        "ai": _ai_view(saved) if saved else None,
+        "areas": [("RM", "위험 관리"), ("PA", "계획 준수"), ("BC", "행동 일관성"), ("MC", "시장 상황")],
+        "source_note": _source_note(conn, project_id),
+    })
+
+
+@app.post("/api/report")
+def report_ai(conn=Depends(get_conn), project_id: int = Depends(current_project)):
+    """리포트 화면이 열린 뒤 부른다. 숫자는 먼저 보여 주고 AI 설명만 이어서 채운다."""
+    if not _finished(conn, project_id):
+        raise HTTPException(status_code=409, detail="프로젝트가 끝난 뒤에만 만들 수 있어요")
+    out = ai_report.generate_final(conn, project_id)
+    conn.commit()
+    return JSONResponse(_ai_view(out["ai"]))
+
+
 # ------------------------------------------------------------------ API
 @app.get("/api/quotes")
 def quotes(conn=Depends(get_conn), project_id: int = Depends(current_project)):
@@ -358,8 +533,7 @@ def quotes(conn=Depends(get_conn), project_id: int = Depends(current_project)):
 def _after_clock(conn, project_id: int, clock, was: str) -> None:
     """장 마감에 처음 닿은 순간 장 마감 처리를 한 번만 실행한다 (명세서 10-2)."""
     if was != CLOSED and clock.status == CLOSED:
-        market_close(conn, project_id, clock.sim_now)
-        # 3주차: 여기서 RM-03·BC-01 판정 → AI 일일 피드백 → 결과 공개
+        close_day(conn, project_id, clock)
 
 
 @app.get("/api/clock")
@@ -391,6 +565,7 @@ def control_clock(action: str, speed: int | None = None,
         elif action == "skip":
             clock.skip_to_close(watcher)
         elif action == "next":
+            _require_active(conn, project_id)
             clock.next_day()
         else:
             raise HTTPException(status_code=400, detail=f"알 수 없는 조작: {action}")

@@ -21,9 +21,14 @@
     $("btn-toggle").hidden = !live;
     $("btn-speed").hidden = !live;
     $("btn-skip").hidden = !live;
-    // 3주차: 장 마감이면 결과 화면으로 자동 전환. 지금은 다음 거래일 버튼만 보여준다.
-    $("btn-next").hidden = !(s.status === "closed" && !s.is_last_day);
-    // 지정가 체결, 장 열림·마감, 날짜 변경처럼 화면 내용이 바뀌면 새로고침한다
+    // 장 마감 뒤에는 결과 화면으로 가는 버튼만 (다음 거래일은 결과 화면에서만 진행)
+    $("btn-next").hidden = s.status !== "closed";
+    // 장 마감에 닿는 순간 결과 화면으로 자동 전환 (명세서 12-1)
+    if (before && before.status !== "closed" && s.status === "closed") {
+      location.href = "/close";
+      return;
+    }
+    // 지정가 체결, 장 열림, 날짜 변경처럼 화면 내용이 바뀌면 새로고침한다
     const changed = before && (before.status !== s.status || before.day !== s.day);
     if ((s.events && s.events.some((e) => e.startsWith("order_filled"))) || changed) {
       location.reload();
@@ -43,7 +48,7 @@
     call("POST", `/api/clock/speed?speed=${next}`);
   };
   $("btn-skip").onclick = () => { $("btn-skip").disabled = true; call("POST", "/api/clock/skip"); };
-  $("btn-next").onclick = () => call("POST", "/api/clock/next");
+  $("btn-next").onclick = () => { location.href = "/close"; };
 
   call("GET", "/api/clock");
   setInterval(() => { if (state && state.status === "running") call("GET", "/api/clock"); }, 1000);

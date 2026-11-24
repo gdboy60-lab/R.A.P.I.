@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="closebar">
+  <span class="small dim">{{ clock.day }}일차 / {{ clock.total_days }}일</span>
+  <strong>장 마감 {{ clock.time }}</strong>
+</header>
+
+{% if status == 'terminated' %}
+<section class="card">
+  <h1>체결량 미달로 프로젝트가 종료되었습니다</h1>
+  <p class="small muted">처음 5일 동안 체결된 주문이 없어서 평소 거래량을 잴 수 없었어요.</p>
+</section>
+{% else %}
+<div>
+  <h1>{{ clock.day }}일차를 돌아볼게요</h1>
+  <p class="muted">오늘 감점 {{ n_violations }}건 · 전체 점수 {{ '%.1f'|format(before.overall) }} → {{ '%.1f'|format(after.overall) }}</p>
+</div>
+{% endif %}
+
+<section class="card">
+  <div class="grid4">
+    {% for key, label in areas %}
+    <div class="tile center">
+      <span class="small muted">{{ label }}</span>
+      <strong>{{ after[key]|int }}</strong>
+      {% if after[key] < before[key] %}<span class="small warn">{{ (after[key] - before[key])|int }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<h2>오늘의 판정</h2>
+{% for i in items %}
+<section class="card evalc">
+  <div class="row-between">
+    <span class="small muted"><b>{{ i.rule_id }}</b> · {{ i.name }} · #{{ i.eval_id }}</span>
+    {% if i.result == 'violation' %}<strong class="warn">-{{ i.penalty }}</strong>{% else %}<span class="small muted">보류</span>{% endif %}
+  </div>
+  <div>{{ i.text }}</div>
+</section>
+{% else %}
+<p class="card">오늘은 감점이 없어요.</p>
+{% endfor %}
+{% if clock.day == 5 and baseline_avg %}
+<p class="card small">처음 5일 동안 체결된 주문은 하루 평균 <b>{{ '%.1f'|format(baseline_avg) }}건</b>이에요.
+6일차부터는 하루 {{ '%.1f'|format(baseline_avg * 3) }}건 이상이면 '평소보다 과도한 거래'로 판정돼요.</p>
+{% endif %}
+{% if cancelled %}<p class="small muted">체결되지 않은 지정가 주문 {{ cancelled }}건이 장 마감으로 자동 취소됐어요.</p>{% endif %}
+
+{% if feedback %}{% set fb = feedback %}{% include "_feedback.html" %}
+{% else %}
+<section class="card fb" id="fb-slot">
+  <strong>AI 피드백</strong>
+  <p class="small muted">오늘의 피드백을 만드는 중이에요… 점수와 판정은 위에 먼저 공개됐어요.</p>
+</section>
+{% endif %}
+
+{% if status == 'active' %}
+<form method="post" action="/next">
+  <button class="btn btn-dark" type="submit">{{ clock.day + 1 }}일차로 넘어가기</button>
+</form>
+{% else %}
+<section class="card">
+  <strong>최종 점수 {{ '%.1f'|format(after.overall) }}</strong>
+  <p class="small muted">기간 전체를 돌아보는 리포트가 준비됐어요.</p>
+</section>
+<a class="btn btn-dark linkbtn" href="/report">최종 리포트 보기</a>
+{% endif %}
+<a class="small muted center link" href="/home">홈에서 오늘 기록 보기</a>
+{% endblock %}
+{% block scripts %}
+{% if not feedback %}
+<script>
+fetch("/api/feedback/today", { method: "POST" })
+  .then((r) => r.ok ? r.text() : Promise.reject(r.status))
+  .then((html) => { document.getElementById("fb-slot").outerHTML = html; })
+  .catch(() => {
+    document.querySelector("#fb-slot p").textContent = "피드백을 만들지 못했어요. 새로고침하면 다시 시도해요.";
+  });
+</script>
+{% endif %}
+{% endblock %}

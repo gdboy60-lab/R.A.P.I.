@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from .. import settings
+from ..rules import engine as rules
 from . import indicators
 from .prices import ReplayFeed
 
@@ -148,6 +149,7 @@ def fill(conn, feed: ReplayFeed, order_id: int, price: int, t: datetime) -> int:
     amount = price * qty
     if o["side"] == "buy":
         fee, tax = math.floor(amount * settings.BUY_FEE_RATE), 0
+        pre_total = total_assets(conn, feed, account_id, t)          # RM-01·02 분모: 매수 직전 총자산
         conn.execute("UPDATE accounts SET cash = cash - ? WHERE account_id = ?", (amount + fee, account_id))
         trade_id = _open_or_get_trade(conn, account_id, code, order_id, t)
         conn.execute(
@@ -177,14 +179,29 @@ def fill(conn, feed: ReplayFeed, order_id: int, price: int, t: datetime) -> int:
     ).lastrowid
     _snapshot(conn, feed, exec_id, code, price, t)
 
-    if o["side"] == "sell":
+    if o["side"] == "buy":
+        rules.on_buy_fill(conn, account_id=account_id, order_id=order_id, exec_id=exec_id, trade_id=trade_id,
+                          price=price, qty=qty, pre_total_assets=pre_total, t=t)
+    else:
         left = conn.execute(
             "SELECT quantity FROM holdings WHERE account_id = ? AND stock_code = ?", (account_id, code)
         ).fetchone()[0]
         if left == 0:
             close_trade(conn, trade_id, t)
             conn.execute("DELETE FROM holdings WHERE account_id = ? AND stock_code = ?", (account_id, code))
+            rules.on_trade_closed(conn, trade_id, t)
     return exec_id
+
+
+def total_assets(conn, feed: ReplayFeed, account_id: int, t: datetime) -> int:
+    """현금 + 보유 주식 평가액 (그 시각 현재가). 시세가 없는 종목은 0으로 친다."""
+    cash = conn.execute("SELECT cash FROM accounts WHERE account_id = ?", (account_id,)).fetchone()[0]
+    value = 0
+    for h in conn.execute("SELECT stock_code, quantity FROM holdings WHERE account_id = ? AND quantity > 0",
+                          (account_id,)):
+        q = feed.quote(h[0], t)
+        value += (q.price if q else 0) * h[1]
+    return cash + value
 
 
 def _open_or_get_trade(conn, account_id: int, code: str, order_id: int, t: datetime) -> int:

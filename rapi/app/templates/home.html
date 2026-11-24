@@ -3,6 +3,12 @@
 <div class="row-between">
   <h1>내 거래 습관</h1><span class="small muted">전 거래일 마감 기준</span>
 </div>
+{% if finished %}
+<a class="card dark link" href="/report">
+  <span class="small fb-label">프로젝트가 끝났어요</span>
+  <strong>최종 리포트 보기 →</strong>
+</a>
+{% endif %}
 <section class="card">
   <div class="big">{{ '%.1f'|format(scores.overall) }} <span class="muted small">/ 100 전체 점수</span></div>
   <div class="grid2">

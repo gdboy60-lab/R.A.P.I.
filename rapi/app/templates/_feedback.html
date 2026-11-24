@@ -1,0 +1,33 @@
+<section class="card fb" id="fb-slot">
+  <div class="row-between">
+    <strong>AI 피드백</strong>
+    <span class="small muted">
+      {% if fb.is_ai %}판정 기록에 근거해 작성됐어요
+      {% elif fb.status == 'failed' %}AI 연결이 안 돼서 기본 피드백을 보여줘요
+      {% else %}기본 피드백 (AI 키 없음){% endif %}
+    </span>
+  </div>
+  <p class="fb-summary">{{ fb.summary }}</p>
+  {% if fb.causes %}
+  <div class="fb-part">
+    <span class="small muted fb-label">핵심 원인</span>
+    {% for c in fb.causes %}<p>{{ c.text }} <span class="small muted">[{% for i in c.eval_ids %}#{{ i }}{{ ', ' if not loop.last }}{% endfor %}]</span></p>{% endfor %}
+  </div>
+  {% endif %}
+  {% if fb.pattern %}
+  <div class="fb-part">
+    <span class="small muted fb-label">반복 패턴</span>
+    <p>{{ fb.pattern.text }}</p>
+  </div>
+  {% endif %}
+  {% if fb.yesterday_check %}
+  <div class="fb-part">
+    <span class="small muted fb-label">어제 제안 점검</span>
+    <p>{{ fb.yesterday_check }}</p>
+  </div>
+  {% endif %}
+  <div class="fb-action">
+    <span class="small fb-label">내일 해볼 행동</span>
+    <p>{{ fb.tomorrow_action }}</p>
+  </div>
+</section>

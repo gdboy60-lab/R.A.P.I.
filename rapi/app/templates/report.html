@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="closebar">
+  <span class="small dim">{{ d.total_days }}일 진행</span>
+  <strong>최종 리포트</strong>
+</header>
+
+{% if d.status == 'terminated' %}
+<p class="card small">{{ d.end_reason or '조기 종료' }}로 프로젝트가 {{ d.total_days }}일차에 끝났어요. 그때까지의 기록으로 만든 리포트예요.</p>
+{% endif %}
+
+{# 1. 최종 점수 #}
+<section class="card">
+  <span class="small muted">최종 점수</span>
+  {% if d.scores %}
+  <div class="big">{{ '%.1f'|format(d.scores.overall) }} <span class="muted small">/ 100</span></div>
+  <div class="grid4">
+    {% for key, label in areas %}
+    <div class="tile center"><span class="small muted">{{ label }}</span><strong>{{ d.scores[key]|int }}</strong></div>
+    {% endfor %}
+  </div>
+  {% else %}<p class="muted">점수가 확정되지 않았어요.</p>{% endif %}
+</section>
+
+{# 2. 일차별 감점 #}
+<section class="card">
+  <strong>일차별 감점</strong>
+  <svg class="chart" viewBox="0 0 {{ chart.W }} {{ chart.H }}" role="img"
+       aria-label="일차별 감점 합계: {% for b in chart.bars %}{{ b.day }}일차 {{ b.penalty }}점{{ ', ' if not loop.last }}{% endfor %}">
+    <line x1="0" x2="{{ chart.W }}" y1="{{ chart.base_y }}" y2="{{ chart.base_y }}" class="axis"/>
+    {% if chart.divider %}
+    <line x1="{{ chart.divider }}" x2="{{ chart.divider }}" y1="6" y2="{{ chart.base_y }}" class="divider"/>
+    <text x="{{ chart.divider - 4 }}" y="12" text-anchor="end" class="lbl">처음 5일</text>
+    {% endif %}
+    {% for b in chart.bars %}
+    <g class="bar{{ ' zero' if not b.penalty }}">
+      <title>{{ b.day }}일차 ({{ b.date }}) · 감점 {{ b.penalty }}점</title>
+      <rect class="hit" x="{{ b.hx }}" y="0" width="{{ b.hw }}" height="{{ chart.H }}"/>
+      <path class="mark" d="M{{ b.x }},{{ chart.base_y }} V{{ b.y + [4, b.h]|min }} q0,-{{ [4, b.h]|min }} {{ [4, b.h]|min }},-{{ [4, b.h]|min }} H{{ b.x + b.w - [4, b.h]|min }} q{{ [4, b.h]|min }},0 {{ [4, b.h]|min }},{{ [4, b.h]|min }} V{{ chart.base_y }} Z"/>
+      {% if b.penalty %}<text x="{{ b.cx }}" y="{{ b.y - 5 }}" text-anchor="middle" class="val">{{ b.penalty }}</text>{% endif %}
+      <text x="{{ b.cx }}" y="{{ chart.H - 8 }}" text-anchor="middle" class="lbl">{{ b.day }}</text>
+    </g>
+    {% endfor %}
+  </svg>
+  <span class="small muted">가로: 일차 · 막대 위 숫자: 그날 감점 합계</span>
+</section>
+
+{# 3. 반복된 위반 상위 3개 #}
+<h2>자주 나온 위반</h2>
+{% for t in d.top_rules %}
+<section class="card evalc">
+  <div class="row-between">
+    <span class="small muted"><b>{{ t.rule_id }}</b> · {{ t.rule_name }}</span>
+    <strong class="warn">{{ t.count }}번 · -{{ t.penalty }}</strong>
+  </div>
+  <p class="ai-slot" data-rule="{{ t.rule_id }}">
+    {% if ai %}{{ ai.repeated[t.rule_id].text }}
+    <span class="small muted">[{% for i in ai.repeated[t.rule_id].eval_ids %}#{{ i }}{{ ', ' if not loop.last }}{% endfor %}]</span>
+    {% else %}<span class="small muted">설명을 만드는 중이에요…</span>{% endif %}
+  </p>
+  <span class="small muted">대표 사례 #{{ t.example_eval_id }} · {{ t.example }}</span>
+</section>
+{% else %}
+<p class="card">기간 동안 위반이 없었어요.</p>
+{% endfor %}
+
+{# 4. 처음 5일과 이후 비교 #}
+<h2>처음 5일과 이후</h2>
+<section class="card">
+  {% if d.change %}
+  <div class="grid2">
+    <div class="tile"><span class="small muted">처음 {{ d.change.first_days }}일</span><strong>{{ '%.1f'|format(d.change.first_avg) }}건</strong><span class="small muted">하루 평균 위반</span></div>
+    <div class="tile"><span class="small muted">이후 {{ d.change.rest_days }}일</span><strong>{{ '%.1f'|format(d.change.rest_avg) }}건</strong><span class="small muted">하루 평균 위반</span></div>
+  </div>
+  <p class="ai-change">{% if ai %}{{ ai.change }}{% else %}<span class="small muted">설명을 만드는 중이에요…</span>{% endif %}</p>
+  {% else %}
+  <p class="muted">5일 뒤의 기록이 없어서 비교할 수 없어요.</p>
+  {% endif %}
+</section>
+
+{# 5. 제안 행동 실행률 #}
+<h2>제안 행동 실행률</h2>
+<section class="card">
+  {% set ex = d.execution %}
+  {% if ex.judged %}
+  <div class="row-between"><strong>{{ ex.done }} / {{ ex.judged }}번 실행</strong><span class="muted">{{ (ex.rate * 100)|round|int }}%</span></div>
+  <div class="meter" role="img" aria-label="실행률 {{ (ex.rate * 100)|round|int }}%"><span style="width: {{ ex.rate * 100 }}%"></span></div>
+  <span class="small muted">전날 피드백의 '내일 해볼 행동'을 다음 날 기록으로 확인할 수 있었던 {{ ex.judged }}번 중</span>
+  {% else %}
+  <p class="muted">다음 날 기록으로 확인할 수 있었던 제안이 없었어요.</p>
+  {% endif %}
+</section>
+
+{# 6. 다음에 집중할 습관 #}
+<section class="card dark">
+  <span class="small fb-label">다음 프로젝트에서 집중할 습관 하나</span>
+  <p class="fb-summary ai-focus">{% if ai %}{{ ai.focus.text }}{% else %}만드는 중이에요…{% endif %}</p>
+</section>
+<p class="small muted ai-status">
+  {% if ai %}{% if ai.is_ai %}판정 기록에 근거해 AI가 작성했어요{% elif ai.status == 'failed' %}AI 연결이 안 돼서 기본 문장을 보여줘요{% else %}기본 문장 (AI 키 없음){% endif %}{% endif %}
+</p>
+
+{# 7. 해결되지 않은 보류 #}
+<h2>판정하지 못한 기록</h2>
+<section class="card">
+  {% for h in d.holds %}
+  <p class="small"><b>{{ h.rule_id }}</b> · {{ h.rule_name }} · #{{ h.eval_id }}<br><span class="muted">{{ h.reason or '자료가 부족해 판정을 보류했어요' }}</span></p>
+  {% else %}
+  <p class="muted">없음</p>
+  {% endfor %}
+</section>
+
+<a class="btn btn-dark linkbtn" href="/start">새 프로젝트 시작하기</a>
+<a class="small muted center link" href="/feedback">일차별 피드백 다시 보기</a>
+{% endblock %}
+{% block scripts %}
+{% if not ai %}
+<script>
+(function () {
+  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  fetch("/api/report", { method: "POST" })
+    .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+    .then((ai) => {
+      document.querySelectorAll(".ai-slot").forEach((el) => {
+        const r = ai.repeated[el.dataset.rule];
+        if (r) el.innerHTML = esc(r.text) + ' <span class="small muted">[' + r.eval_ids.map((i) => "#" + i).join(", ") + "]</span>";
+      });
+      const ch = document.querySelector(".ai-change");
+      if (ch) ch.textContent = ai.change || "";
+      document.querySelector(".ai-focus").textContent = ai.focus.text;
+      document.querySelector(".ai-status").textContent = ai.is_ai ? "판정 기록에 근거해 AI가 작성했어요"
+        : ai.status === "failed" ? "AI 연결이 안 돼서 기본 문장을 보여줘요" : "기본 문장 (AI 키 없음)";
+    })
+    .catch(() => {
+      document.querySelector(".ai-status").textContent = "설명을 만들지 못했어요. 새로고침하면 다시 시도해요.";
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}
